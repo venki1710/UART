@@ -1,0 +1,94 @@
+// >>>>>>>>>>>> testbench uart module
+
+module testbench;
+reg clk;
+reg[7:0] tx_data;
+reg reset,transmit;
+wire Rx;
+wire Tx;
+wire[7:0] receive_data;
+wire tx_done,rx_done,glitch;
+wire tx_clk,rx_clk;
+wire[9:0] rx_counter;
+wire[13:0] tx_counter;
+wire state;
+
+uart DUT(clk,tx_data,reset,transmit,Rx,Tx,receive_data,tx_done,rx_done,glitch,tx_clk,rx_clk,tx_counter,rx_counter,state);
+
+always #5 clk = ~clk;
+
+assign Rx = Tx;
+
+initial
+begin
+clk = 0;
+#1 reset = 1;
+#3 tx_data = 8'b01000001;
+#82000             // for tx_clk and rx_clk to be generated
+#10 transmit = 1;
+#104160 transmit = 0;
+end
+endmodule
+
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> uart_tx for FSM on transmitter clock
+
+module testbench_tx;
+reg clk,reset,transmit;
+reg[7:0] data;
+wire Tx,done;
+//wire[13:0] baudrate_counter;
+//wire[3:0] bit_counter;
+wire state;
+
+uart_tx DUT(clk,data,reset,transmit,Tx,done,state);
+
+always #52080 clk = ~clk;  // 100 MHz clk/10416
+
+initial
+begin
+clk = 0;
+#1 reset = 1;
+#3 data = 8'b01000001;
+#10 transmit = 1;
+#104160 transmit = 0;
+end
+
+endmodule
+
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> testbench of FSM on reciever clock
+
+
+module testbench_rx;
+reg clk,Rx,Reset;
+wire[7:0] Received_data;
+wire done;
+wire glitch;
+
+uart_rx DUT2(clk,Rx,Reset,Received_data,done,glitch);
+
+always #3255 clk = ~clk;
+
+initial
+begin
+clk = 0;
+Rx = 1;
+Reset = 1;
+#7 Reset = 0;
+#10005 Rx = 0;
+//#10000 Rx = 1; // if glitch
+#104160 Rx = 1;
+#104160 Rx = 0;
+#104160 Rx = 1;
+#104160 Rx = 1;
+#104160 Rx = 1;
+#104160 Rx = 0;
+#104160 Rx = 1;
+#104160 Rx = 0;
+#104160 Rx = 1;
+#200000 $finish;
+end
+endmodule

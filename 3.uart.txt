@@ -1,0 +1,247 @@
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Top(Main) module
+
+module uart(clk,tx_data,reset,transmit,Rx,Tx,receive_data,tx_done,rx_done,glitch,tx_clk,rx_clk,tx_counter,rx_counter,state);
+input clk;
+input reset,transmit,Rx;
+input[7:0] tx_data;
+output Tx;
+output[7:0] receive_data;
+output tx_done,rx_done,glitch;
+output wire[13:0] tx_counter;
+output wire[9:0] rx_counter;
+
+output wire tx_clk,rx_clk;
+output wire state;
+
+tx_clk_generator gen1(clk,reset,tx_clk,tx_counter);      // MOD 10416 counter
+rx_clk_generator gen2(clk,reset,rx_clk,rx_counter);      // MOD 651 counter
+
+uart_tx tx(tx_clk,tx_data,reset,transmit,Tx,tx_done,state);
+uart_rx rx(rx_clk,Rx,reset,receive_data,rx_done,glitch);
+endmodule
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Transmitter clk generator
+
+module tx_clk_generator(clk,reset,tx_clk,counter);
+input clk,reset;
+output wire tx_clk;
+output reg[13:0] counter;
+always@(posedge reset) counter <= 0;
+always@(posedge clk)
+begin
+counter <= counter + 1;
+if(counter == 14'd10416) counter <= 0;
+end
+assign tx_clk = counter[13];
+endmodule
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Receiver clk generator
+
+module rx_clk_generator(clk,reset,rx_clk,counter);
+input clk,reset;
+output wire rx_clk;
+output reg[9:0] counter;
+always@(posedge reset) counter <= 0;
+always@(posedge clk)
+begin
+counter <= counter + 1;
+if(counter == 10'd651) counter <= 0;
+end
+assign rx_clk = counter[9];
+endmodule
+
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>> FSM on transmitter clock with datapath and controller
+
+
+// >>>> top module
+
+module uart_tx(clk,data,reset,transmit,Tx,done,state);
+input clk,reset,transmit;
+input[7:0] data;
+output wire done;
+output Tx;
+output state;
+
+wire select,shift,load,inc_bitcounter,clear_bitcounter;
+wire [3:0] bit_counter;
+
+datapath_tx dp_tx(clk,reset,data,select,shift,load,inc_bitcounter,clear_bitcounter,bit_counter,done,Tx);
+controller_tx con_tx(clk,reset,transmit,bit_counter,load,shift,inc_bitcounter,clear_bitcounter,select,state);
+endmodule
+
+//>>>> Datapath
+
+module datapath_tx(clk,reset,data,select,shift,load,inc_bitcounter,clear_bitcounter,bit_counter,done,Tx);
+input [7:0] data;
+input clk,reset;
+output done,Tx;
+reg[9:0] data_packet;
+output reg[3:0] bit_counter;
+input select;
+input shift,load,inc_bitcounter,clear_bitcounter;
+
+and and1(done,bit_counter[3],~bit_counter[2],bit_counter[1],~bit_counter[0]);
+
+always@(posedge reset)
+begin
+bit_counter <= 0;
+data_packet <= 0;
+end
+
+always@(posedge clk)
+begin
+if(clear_bitcounter) bit_counter <= 0;
+else if(inc_bitcounter) 
+begin
+bit_counter = bit_counter + 1;
+end
+if(load) data_packet = {1'b1,data,1'b0};
+else if(shift) data_packet <= data_packet >> 1;
+end
+
+mux m1(1'b1,data_packet[0],select,Tx);
+
+endmodule
+
+module mux(in0,in1,select,out);
+input in0,in1,select;
+output reg out;
+always@(*)
+begin
+if(~select) begin out <= in0; end
+else begin out <= in1; end
+end
+endmodule
+
+// >>>> controller
+
+module controller_tx(clk,reset,transmit,bit_counter,load,shift,inc_bitcounter,clear_bitcounter,select,state);
+input clk,reset,transmit;
+input [3:0] bit_counter;
+output reg shift,inc_bitcounter,clear_bitcounter,select;
+output wire load;
+//output reg state,next_state;
+output reg state;
+parameter idle_state = 1'b0,transmitting_state = 1'b1;
+
+assign load = (transmit) & (~state);
+
+always@(posedge reset)
+begin 
+state <= idle_state;
+select <= 0;
+end
+
+always@(posedge clk)
+begin
+case(state)
+idle_state: if(transmit) state <= transmitting_state;
+transmitting_state: if(bit_counter == 4'd9) state <= idle_state;
+default: state <= idle_state;
+endcase
+end
+
+always@(state)
+begin
+case(state)
+idle_state: begin shift <= 0; inc_bitcounter <= 0; clear_bitcounter <= 1; select <= 0; end
+transmitting_state: begin shift <= 1; inc_bitcounter <= 1; clear_bitcounter <= 0; select <= 1; end
+default: begin shift <= 0; inc_bitcounter <= 0; clear_bitcounter <= 1; select <= 0; end
+endcase
+end
+endmodule
+
+
+
+// >>>>>>>>>>>>>>>>>>>>>>>> FSM on receiver clock with datapath and controller
+
+// >>>> top module
+
+module uart_rx(clk,Rx,Reset,Received_data,done,glitch);
+input clk,Rx,Reset;
+output [7:0] Received_data;
+output done;
+output glitch;
+
+wire [3:0] bit_counter,samples_counter;
+wire [9:0] data_packet;
+wire clear_samplescounter,inc_bitcounter,clear_bitcounter,shift,load;
+wire inc_samplescounter;
+wire glitch_check_done;
+wire[1:0] state;
+
+datapath_rx dp_rx(clk,reset,Rx,state,inc_samplescounter,clear_samplescounter,inc_bitcounter,clear_bitcounter,load,shift,glitch_check_done,Received_data,glitch,bit_counter,samples_counter);
+controller_rx con_rx(clk,reset,Rx,bit_counter,samples_counter,inc_samplescounter,clear_samplescounter,inc_bitcounter,clear_bitcounter,load,shift,done,glitch_check_done,state);
+endmodule
+
+// >> datapath
+
+module datapath_rx(clk,reset,Rx,state,inc_samplescounter,clear_samplescounter,inc_bitcounter,clear_bitcounter,load,shift,glitch_check_done,Received_data,glitch,bit_counter,samples_counter);
+input clk,reset,Rx,inc_samplescounter,clear_samplescounter,inc_bitcounter,clear_bitcounter,load,shift,glitch_check_done;
+input [1:0] state;
+output reg [7:0] Received_data;
+output wire glitch;
+output reg [3:0] bit_counter,samples_counter;
+
+wire register_input;
+reg [9:0] data_packet;
+
+assign register_input = Rx;
+assign glitch = (Rx)&(~glitch_check_done)&(~state[1])&(state[0]);
+
+always@(posedge reset)
+begin
+bit_counter <= 0;
+samples_counter <= 0;
+data_packet <= 0;
+end
+
+always@(posedge clk)
+begin
+if(shift) begin data_packet = data_packet >> 1; data_packet[9] = register_input; end
+if(clear_samplescounter) samples_counter <= 0;
+else if(inc_samplescounter) samples_counter <= samples_counter + 1;
+if(clear_bitcounter) bit_counter <= 0;
+else if(inc_bitcounter) bit_counter <= bit_counter + 1;
+if(load) Received_data <= data_packet[8:1];
+end
+endmodule
+
+// >>>> controller
+
+module controller_rx(clk,reset,Rx,bit_counter,samples_counter,inc_samplescounter,clear_samplescounter,inc_bitcounter,clear_bitcounter,load,shift,done,glitch_check_done,state);
+input clk,reset,Rx;
+input [3:0] bit_counter,samples_counter;
+output reg inc_samplescounter,clear_samplescounter,inc_bitcounter,clear_bitcounter,load,shift,done,glitch_check_done;
+output reg[1:0] state;
+
+parameter idle_state = 2'b00, state_1 = 2'b01, state_2 = 2'b10, state_3 = 2'b11;
+
+always@(posedge clk)
+begin
+case(state)
+idle_state: begin if(Rx == 0) state <= state_1;
+else state <= idle_state; end
+state_1: begin if(Rx == 1 && glitch_check_done == 0) begin state <= idle_state; end
+else if(samples_counter == 4'd7) state <= state_2;
+else if(bit_counter == 4'd10) state <= state_3;
+else state <= state_1; end
+state_2: state <= state_1;
+state_3: state <= idle_state;
+default: state <= idle_state;
+endcase
+end
+
+always@(state)
+begin
+case(state)
+idle_state: begin glitch_check_done <= 0; inc_samplescounter <= 0; clear_samplescounter <= 1; clear_bitcounter <= 1; load <= 0; done <= 0; end
+state_1: begin inc_samplescounter <= 1; shift <= 0; inc_bitcounter <= 0; clear_samplescounter <= 0; clear_bitcounter <= 0; end
+state_2: begin shift <= 1; inc_bitcounter <= 1; glitch_check_done <= 1; end
+state_3: begin load <= 1; done <= 1; end
+default: begin glitch_check_done <= 0; inc_samplescounter <= 0; clear_samplescounter <= 1; clear_bitcounter <= 1; load <= 0; done <= 0; end
+endcase
+end
+endmodule
